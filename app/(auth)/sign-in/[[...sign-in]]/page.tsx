@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Image from "next/image";
 
 import { SignInForm } from "./sign-in-form";
 
@@ -7,6 +8,15 @@ export default function SignInPage() {
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand-50 via-white to-brand-100 px-4 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
+          <div className="mx-auto mb-4 flex size-16 items-center justify-center rounded-2xl bg-white shadow-theme-md">
+            <Image
+              src="/mysigrid-logo.png"
+              alt="MySigrid"
+              width={40}
+              height={40}
+              priority
+            />
+          </div>
           <h1 className="text-title-md font-semibold text-gray-900 dark:text-white">
             MySigrid
           </h1>
