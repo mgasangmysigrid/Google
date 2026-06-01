@@ -1,13 +1,15 @@
--- MS4-NYLAS consolidated schema (final state of migrations 0001–0005).
+-- MS4-NYLAS consolidated schema (final state of migrations 0001–0006).
 -- Run this once in a fresh Supabase project: SQL Editor → paste → Run.
 -- Safe to re-run (uses IF NOT EXISTS / IF EXISTS throughout).
 
 create extension if not exists "pgcrypto";
 
--- Users. `id` is the app user id (the demo login uses the email as id).
+-- Users. `id` IS the Supabase Auth uuid (auth.uid()), so RLS policies key off
+-- it directly. Accounts are provisioned by an admin (scripts/create-ea.ts);
+-- there is no public sign-up — this is an internal EA-only tool.
 -- Google OAuth tokens are stored encrypted at rest by the app (AES-256-GCM).
 create table if not exists users (
-  id text primary key,
+  id uuid primary key references auth.users(id) on delete cascade,
   email text unique not null,
   first_name text,
   last_name text,
@@ -36,14 +38,14 @@ create table if not exists tasks (
   status text default 'active',
   type text default 'main',
   priority text default 'normal',
-  assignee_id text references users(id) on delete set null,
+  assignee_id uuid references users(id) on delete set null,
   client_id uuid references clients(id) on delete set null,
   parent_task_id uuid references tasks(id) on delete cascade,
   deadline timestamptz,
   est_effort_minutes int,
   action_date timestamptz,
   notification_at timestamptz,
-  created_by text references users(id) on delete set null,
+  created_by uuid references users(id) on delete set null,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -68,10 +70,10 @@ create table if not exists communications (
   from_name text,
   to_emails text[],
   client_id uuid references clients(id) on delete set null,
-  owner_id text references users(id) on delete cascade,
+  owner_id uuid references users(id) on delete cascade,
   inbox_status text default 'inbox',
   task_id uuid references tasks(id) on delete set null,
-  sent_by text references users(id) on delete set null,
+  sent_by uuid references users(id) on delete set null,
   sent_at timestamptz,
   read_at timestamptz,
   received_at timestamptz default now()
@@ -114,10 +116,66 @@ create trigger tasks_set_updated_at
   before update on tasks
   for each row execute function set_updated_at();
 
--- RLS on (service-role-only; the app accesses these tables with the service-role
--- key and enforces per-user access in route handlers — no anon/public access).
+-- Row-Level Security. Enabled on every table, with owner-scoped policies for the
+-- `authenticated` role (the RLS-respecting client in user-facing routes) so the
+-- DATABASE enforces tenant isolation. The service-role key (token refresh,
+-- account deletion, admin scripts) bypasses RLS by design.
 alter table users enable row level security;
 alter table clients enable row level security;
 alter table tasks enable row level security;
 alter table task_checklist_items enable row level security;
 alter table communications enable row level security;
+
+-- users: read/update only your own profile.
+drop policy if exists users_self_select on users;
+create policy users_self_select on users
+  for select to authenticated using (id = auth.uid());
+drop policy if exists users_self_update on users;
+create policy users_self_update on users
+  for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
+
+-- tasks: assignee or creator.
+drop policy if exists tasks_owner_select on tasks;
+create policy tasks_owner_select on tasks
+  for select to authenticated
+  using (assignee_id = auth.uid() or created_by = auth.uid());
+drop policy if exists tasks_owner_insert on tasks;
+create policy tasks_owner_insert on tasks
+  for insert to authenticated with check (created_by = auth.uid());
+drop policy if exists tasks_owner_update on tasks;
+create policy tasks_owner_update on tasks
+  for update to authenticated
+  using (assignee_id = auth.uid() or created_by = auth.uid())
+  with check (assignee_id = auth.uid() or created_by = auth.uid());
+drop policy if exists tasks_owner_delete on tasks;
+create policy tasks_owner_delete on tasks
+  for delete to authenticated
+  using (assignee_id = auth.uid() or created_by = auth.uid());
+
+-- task_checklist_items: via parent task ownership.
+drop policy if exists checklist_via_task on task_checklist_items;
+create policy checklist_via_task on task_checklist_items
+  for all to authenticated
+  using (exists (select 1 from tasks t where t.id = task_checklist_items.task_id
+    and (t.assignee_id = auth.uid() or t.created_by = auth.uid())))
+  with check (exists (select 1 from tasks t where t.id = task_checklist_items.task_id
+    and (t.assignee_id = auth.uid() or t.created_by = auth.uid())));
+
+-- communications: owned by exactly one EA.
+drop policy if exists comms_owner_select on communications;
+create policy comms_owner_select on communications
+  for select to authenticated using (owner_id = auth.uid());
+drop policy if exists comms_owner_insert on communications;
+create policy comms_owner_insert on communications
+  for insert to authenticated with check (owner_id = auth.uid());
+drop policy if exists comms_owner_update on communications;
+create policy comms_owner_update on communications
+  for update to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+drop policy if exists comms_owner_delete on communications;
+create policy comms_owner_delete on communications
+  for delete to authenticated using (owner_id = auth.uid());
+
+-- clients: shared roster, authenticated-only (never anonymous).
+drop policy if exists clients_authenticated_all on clients;
+create policy clients_authenticated_all on clients
+  for all to authenticated using (true) with check (true);

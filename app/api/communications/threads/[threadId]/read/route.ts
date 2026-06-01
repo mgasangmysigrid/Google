@@ -49,7 +49,7 @@ export async function POST(
     });
     return NextResponse.json(resp.data);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Gmail error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("thread read-state error", err);
+    return NextResponse.json({ error: "Gmail error" }, { status: 500 });
   }
 }

@@ -1,13 +1,13 @@
 # MS4-NYLAS
 
-A slimmed-down full-stack rebuild of [MS4-Frontend](../MS4-Frontend) on a single Next.js app, with Nylas for email and Supabase for data.
+A slimmed-down full-stack rebuild of [MS4-Frontend](../MS4-Frontend) on a single Next.js app, using the Google Gmail API directly for email and Supabase for data.
 
 ## Features
 
-- **Login / Logout** — Clerk-hosted auth with branded sign-in page.
+- **Login / Logout** — Auth.js (NextAuth v5) credentials login backed by **Supabase Auth** (per-EA accounts, no public sign-up). Branded sign-in page.
 - **Dashboard** — greeting, stat cards (today, critical, upcoming), critical task list.
 - **Tasks** — list + detail with create / edit / close / delete; client + priority + deadline.
-- **Communications** — Nylas v3 inbox, OAuth grant flow, send composer.
+- **Communications** — Gmail inbox via a separate "Connect Gmail" OAuth grant flow, send composer.
 - **Clients** — searchable list; click-through filters tasks by client.
 
 ## Tech Stack
@@ -15,9 +15,9 @@ A slimmed-down full-stack rebuild of [MS4-Frontend](../MS4-Frontend) on a single
 - Next.js 15 (App Router) + TypeScript
 - Tailwind CSS 4 + Radix UI primitives
 - TanStack React Query 5
-- Clerk auth (`@clerk/nextjs`)
-- Supabase Postgres (server-side via service-role)
-- Nylas v3 SDK (email)
+- Auth.js / NextAuth v5 (credentials provider → Supabase Auth)
+- Supabase Postgres with **Row-Level Security** (owner-scoped policies; user-facing routes run as the authenticated EA, system paths use service-role)
+- Google Gmail API via `googleapis` (OAuth tokens encrypted at rest, AES-256-GCM)
 - Sonner for toasts, Lucide for icons
 
 ## Project layout
@@ -67,23 +67,56 @@ cp .env.example .env.local
 
 Fill in:
 
-- **Clerk** — create an app at https://dashboard.clerk.com. Copy the publishable key + secret. For user sync, create a webhook to `https://YOUR_HOST/api/webhooks/clerk` for `user.created`, `user.updated`, `user.deleted` and copy the signing secret.
-- **Supabase** — create a project at https://supabase.com/dashboard. Copy the project URL and the **service role** key (server-only).
-- **Nylas** — create an app at https://dashboard-v3.nylas.com. Copy the API key, client ID. Add `http://localhost:3000/api/communications/nylas/callback` to redirect URIs.
+- **Supabase** — create a project at https://supabase.com/dashboard. Copy:
+  - `NEXT_PUBLIC_SUPABASE_URL` — the project URL.
+  - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — the anon/public key (used by the RLS-respecting client and for login).
+  - `SUPABASE_SERVICE_ROLE_KEY` — the service-role key (server-only; used by token-refresh, account deletion, and the provisioning script). **Never expose this to the browser.**
+- **Auth.js** — set `AUTH_SECRET` (`openssl rand -base64 32`) and `AUTH_URL` (e.g. `http://localhost:3000`).
+- **Token encryption** — set `TOKEN_ENCRYPTION_KEY` (`openssl rand -base64 32`); OAuth tokens are AES-256-GCM encrypted at rest with a key derived from this.
+- **Google** — create an OAuth client. Copy `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`. Add `http://localhost:3000/api/communications/google/callback` to the redirect URIs.
 
 ### 3. Run the database migration
 
-In the Supabase SQL editor, paste and run [supabase/migrations/0001_init.sql](supabase/migrations/0001_init.sql).
+In the Supabase SQL editor, paste and run [supabase/schema.sql](supabase/schema.sql) (the consolidated final schema, incl. uuid keys + RLS policies). For an existing DB, apply the migrations in order — the auth/RLS changes are in [supabase/migrations/0006_supabase_auth_uuid_rls.sql](supabase/migrations/0006_supabase_auth_uuid_rls.sql).
 
-Optionally seed: edit [supabase/seed.sql](supabase/seed.sql), replace the `clerk_user_id` placeholder with your own (visible in the Clerk dashboard or the `users` table after first sign-in), then run.
+### 4. Provision EA accounts (no public sign-up)
 
-### 4. Start the dev server
+This is an internal EA-only tool; accounts are created by an admin:
+
+```bash
+node --env-file=.env.local node_modules/.bin/tsx scripts/create-ea.ts ea@yourdomain.com "a-strong-password" "First" "Last"
+```
+
+(Or create the user in the Supabase Auth dashboard, then add a matching `users` row with the same uuid.)
+
+Optionally seed dev data: edit [supabase/seed.sql](supabase/seed.sql), set `ea_user_id` to a provisioned EA's uuid, then run.
+
+### 5. Start the dev server
 
 ```bash
 npm run dev
 ```
 
-Visit http://localhost:3000 — you'll be redirected to `/sign-in`.
+Visit http://localhost:3000 — you'll be redirected to `/sign-in`. Log in with a provisioned EA account.
+
+## Security & CASA Tier 2
+
+This app handles Google **restricted scopes** (`gmail.readonly`, `gmail.send`, `gmail.modify`) and is built to pass a Google CASA Tier 2 assessment. Controls in place:
+
+- **Per-EA authentication** via Supabase Auth (no shared credential, no public sign-up; accounts are admin-provisioned). Passwords are hashed by Supabase (bcrypt).
+- **Row-Level Security** — every table has owner-scoped policies keyed off `auth.uid()`. User-facing routes run as the authenticated EA through an RLS-respecting client ([lib/supabase/server.ts](lib/supabase/server.ts) `supabaseUser`), so the database enforces tenant isolation. The service-role key (which bypasses RLS) is confined to token-refresh, account deletion, and provisioning.
+- **OAuth tokens encrypted at rest** (AES-256-GCM, [lib/crypto.ts](lib/crypto.ts)).
+- **Limited Use data deletion** — disconnect ([/api/communications/google/revoke](app/api/communications/google/revoke/route.ts)) and full account deletion ([/api/account](app/api/account/route.ts)) revoke the Google grant and purge all restricted-scope-derived data.
+- **Strict CSP** with a per-request nonce (no `unsafe-inline`/`unsafe-eval` in prod) + HSTS, frame-deny, nosniff ([middleware.ts](middleware.ts), [next.config.ts](next.config.ts)).
+- **Email-HTML XSS sanitization** server-side ([lib/sanitize-html.ts](lib/sanitize-html.ts)) plus a sandboxed render iframe.
+- **Anti-automation** — rate limiting on login + email send ([lib/rate-limit.ts](lib/rate-limit.ts)), request body-size caps, MIME CRLF guards, Zod validation, generic error messages.
+
+### Before submitting for assessment
+
+- **Put Cloudflare (or equivalent) in front** of the production deployment. It backstops the network-layer DAST checks (TLS, DDoS, edge rate-limiting) and covers the multi-instance gap in the in-memory rate limiter. For a horizontally-scaled deploy, also move `lib/rate-limit.ts` to a shared store (Redis/Upstash).
+- **Publish a privacy policy** and link it from the Google OAuth consent screen.
+- **Move the OAuth consent screen to "In production"** (a "Testing" app expires restricted-scope refresh tokens every 7 days).
+- The assessor (e.g. TAC Security) runs an automated DAST scan and sends a ~54-question SAQ; the controls above map directly to the ASVS items it asks about.
 
 ## Branding
 

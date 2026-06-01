@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { z } from "zod";
 
-import { supabaseServer } from "@/lib/supabase/server";
+import { sessionContext } from "@/lib/supabase/from-session";
 
 const CreateTask = z.object({
   title: z.string().min(1),
@@ -16,21 +15,22 @@ const CreateTask = z.object({
   action_date: z.string().datetime().optional().nullable(),
   notification_at: z.string().datetime().optional().nullable(),
   est_effort_minutes: z.number().int().nonnegative().optional().nullable(),
-  assignee_id: z.string().optional().nullable(),
+  assignee_id: z.string().uuid().optional().nullable(),
 });
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const ctx = await sessionContext();
+  if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db } = ctx;
 
   const url = new URL(req.url);
   const status = url.searchParams.get("status");
   const clientId = url.searchParams.get("client_id");
 
-  // Always scope to the caller's own tasks (assignee or creator). The service
-  // role bypasses RLS, so we never trust a client-supplied assignee/mine param.
-  let q = supabaseServer()
+  // RLS already scopes tasks to the caller (assignee or creator); the explicit
+  // .or() filter is kept as defense-in-depth so the intent is clear even if a
+  // policy is ever loosened.
+  let q = db
     .from("tasks")
     .select("*, client:clients(id, name)")
     .or(`assignee_id.eq.${userId},created_by.eq.${userId}`)
@@ -47,9 +47,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const ctx = await sessionContext();
+  if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db } = ctx;
 
   const body = await req.json();
   const parsed = CreateTask.safeParse(body);
@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     created_by: userId,
   };
 
-  const { data, error } = await supabaseServer()
+  const { data, error } = await db
     .from("tasks")
     .insert(insert)
     .select("*, client:clients(id, name)")

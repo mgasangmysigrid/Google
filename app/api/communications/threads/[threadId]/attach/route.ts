@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { z } from "zod";
 
-import { supabaseServer } from "@/lib/supabase/server";
+import { sessionContext } from "@/lib/supabase/from-session";
 
 const Body = z.object({ task_id: z.string().uuid() });
 
@@ -10,9 +9,9 @@ export async function POST(
   req: Request,
   ctx: { params: Promise<{ threadId: string }> },
 ) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const sc = await sessionContext();
+  if (!sc) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db } = sc;
 
   const { threadId } = await ctx.params;
   const parsed = Body.safeParse(await req.json());
@@ -20,8 +19,7 @@ export async function POST(
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const supabase = supabaseServer();
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("communications")
     .upsert(
       {

@@ -2,30 +2,39 @@ import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { auth } from "@/auth";
-import { supabaseServer } from "@/lib/supabase/server";
+import { sessionContext } from "@/lib/supabase/from-session";
 import {
   GmailNotConnectedError,
   getGmailClient,
 } from "@/lib/google/client";
 import { buildMime, encodeMime } from "@/lib/google/mime";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+// Gmail's hard message cap is ~35 MB after base64 (~25 MB raw). We bound each
+// field well below that so a single request cannot exhaust memory during JSON
+// parse / base64 decode / MIME build (authenticated-DoS, CASA ASVS V13.2).
+const MAX_BODY_CHARS = 500_000; // ~500 KB of HTML body
+const MAX_SUBJECT_CHARS = 998; // RFC 5322 line-length guidance
+const MAX_ATTACHMENT_B64 = 14_000_000; // ~10 MB per attachment after base64
+const MAX_TOTAL_REQUEST_BYTES = 30 * 1024 * 1024; // overall request cap (~30 MB)
+const noCtrl = /^[^\r\n]+$/; // reject CR/LF in header-bound fields
+
 const Attachment = z.object({
-  filename: z.string().min(1),
-  contentType: z.string().min(1),
-  content: z.string().min(1),
+  filename: z.string().min(1).max(255).regex(noCtrl),
+  contentType: z.string().min(1).max(255).regex(/^[\w.+-]+\/[\w.+-]+$/),
+  content: z.string().min(1).max(MAX_ATTACHMENT_B64),
   size: z.number().int().nonnegative().optional(),
 });
 
 const SendEmail = z.object({
-  to: z.array(z.object({ email: z.string().email(), name: z.string().optional() })).min(1),
-  subject: z.string().min(1),
-  body: z.string().min(1),
-  reply_to_message_id: z.string().optional(),
-  thread_id: z.string().optional(),
+  to: z.array(z.object({ email: z.string().email(), name: z.string().optional() })).min(1).max(100),
+  subject: z.string().min(1).max(MAX_SUBJECT_CHARS).regex(noCtrl),
+  body: z.string().min(1).max(MAX_BODY_CHARS),
+  reply_to_message_id: z.string().max(512).optional(),
+  thread_id: z.string().max(512).optional(),
   attachments: z.array(Attachment).max(10).optional(),
 });
 
@@ -39,16 +48,32 @@ function buildFooter(userId: string) {
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const ctx = await sessionContext();
+  if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db: supabase } = ctx;
+
+  // Anti-automation: cap outbound sends per user to prevent Gmail quota/cost
+  // abuse and spam relay (CASA ASVS V11.1).
+  const rl = rateLimit(`email-send:${userId}`, 20, 60_000);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: "Too many emails sent. Please slow down." },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
+    );
+  }
+
+  // Reject oversized requests up front (Next.js App Router has no default body
+  // cap) so we never buffer a huge payload into memory.
+  const contentLength = Number(req.headers.get("content-length") ?? 0);
+  if (contentLength > MAX_TOTAL_REQUEST_BYTES) {
+    return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  }
 
   const parsed = SendEmail.safeParse(await req.json());
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const supabase = supabaseServer();
   const { data: user } = await supabase
     .from("users")
     .select("email, first_name, last_name")
@@ -143,7 +168,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json(sentMessage, { status: 201 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to send";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("email send error", err);
+    return NextResponse.json({ error: "Failed to send email" }, { status: 500 });
   }
 }

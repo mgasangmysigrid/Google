@@ -119,21 +119,34 @@ export async function getGmailClient(userId: string): Promise<gmail_v1.Gmail> {
 export async function revokeGoogleAccess(userId: string) {
   const tokens = await loadTokens(userId);
   // loadTokens returns decrypted (plaintext) tokens, which is what Google's
-  // revoke endpoint expects.
+  // revoke endpoint expects. Revoking the refresh token revokes the whole grant
+  // (and with it any outstanding access token).
   const token = tokens?.google_refresh_token ?? tokens?.google_access_token;
   if (token) {
     try {
-      await fetch(
+      const res = await fetch(
         `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`,
         { method: "POST" },
       );
+      // fetch does not throw on non-2xx; check explicitly so a failed revoke is
+      // surfaced rather than silently swallowed (Limited Use requires the grant
+      // is actually revoked). 400 invalid_token means it was already revoked,
+      // which is fine.
+      if (!res.ok && res.status !== 400) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Google revoke failed: ${res.status} ${body}`);
+      }
     } catch (err) {
-      console.warn("google revoke failed", err);
+      console.error("google revoke failed", err);
+      throw err;
     }
   }
+
   const supabase = supabaseServer();
-  // Purge cached Gmail content (subjects, snippets, sender/recipient metadata).
-  await supabase.from("communications").delete().eq("owner_id", userId);
+
+  // Clear the tokens FIRST so the OAuth credentials are gone even if a
+  // downstream data purge fails. (Order matters: a thrown delete must not leave
+  // live tokens behind.)
   await supabase
     .from("users")
     .update({
@@ -142,4 +155,24 @@ export async function revokeGoogleAccess(userId: string) {
       google_access_token_expires_at: null,
     })
     .eq("id", userId);
+
+  // Purge ALL restricted-scope-derived data, per Google Limited Use:
+  //  - tasks created from emails carry the subject (title) and snippet
+  //    (description); identify them via communications.task_id and delete them.
+  //  - then the cached communications rows (subjects, snippets, addresses).
+  const { data: linkedTasks } = await supabase
+    .from("communications")
+    .select("task_id")
+    .eq("owner_id", userId)
+    .not("task_id", "is", null);
+
+  const taskIds = (linkedTasks ?? [])
+    .map((row) => row.task_id)
+    .filter((id): id is string => Boolean(id));
+
+  if (taskIds.length > 0) {
+    await supabase.from("tasks").delete().in("id", taskIds);
+  }
+
+  await supabase.from("communications").delete().eq("owner_id", userId);
 }

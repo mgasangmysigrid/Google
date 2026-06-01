@@ -297,11 +297,23 @@ function MessageBody({
         setTimeout(postHeight, 500);
       }
     `;
-    const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>html,body{margin:0;padding:12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#111;background:transparent}img{max-width:100%;height:auto}a{color:#2563eb}</style></head><body>${html}<script>${script}<\/script></body></html>`;
+    // The email HTML is already sanitized server-side (lib/sanitize-html.ts).
+    // The CSP below is defense-in-depth: it permits inline styles and remote
+    // images (which emails need) but blocks any object/embed/frame and external
+    // script sources. The only script that runs is our own resize helper.
+    const csp =
+      "default-src 'none'; img-src https: data: cid:; style-src 'unsafe-inline'; " +
+      "font-src https: data:; script-src 'unsafe-inline'";
+    const srcDoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>html,body{margin:0;padding:12px;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#111;background:transparent}img{max-width:100%;height:auto}a{color:#2563eb}</style></head><body>${html}<script>${script}<\/script></body></html>`;
     return (
       <iframe
         ref={iframeRef}
-        sandbox="allow-popups allow-same-origin allow-scripts"
+        // No allow-same-origin: the frame runs in a null/opaque origin so even
+        // if sanitization were bypassed, script could not reach this app's
+        // origin (cookies, session, /api). The resize script posts to "*" and
+        // the parent validates the message type+key, so same-origin is not
+        // needed.
+        sandbox="allow-popups allow-scripts"
         srcDoc={srcDoc}
         style={{ height: `${height}px` }}
         className="block w-full border-0 bg-white dark:bg-gray-950"
@@ -638,6 +650,18 @@ function ConnectGmailEmptyState() {
         <GoogleGlyph />
         Sign in with Google
       </a>
+      <p className="mt-4 text-theme-xs text-gray-500 dark:text-gray-400">
+        MySigrid&rsquo;s use of your Google data follows the{" "}
+        <a
+          href="https://www.mysigrid.com/privacy-policy"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:text-gray-700 dark:hover:text-gray-200"
+        >
+          Privacy Policy
+        </a>
+        , including the Google API Services User Data Policy (Limited Use).
+      </p>
     </div>
   );
 }

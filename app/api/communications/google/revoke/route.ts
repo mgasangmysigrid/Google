@@ -10,6 +10,14 @@ export async function DELETE() {
   const userId = session?.user?.id;
   if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  await revokeGoogleAccess(userId);
+  try {
+    await revokeGoogleAccess(userId);
+  } catch (err) {
+    console.error("google disconnect failed", err);
+    return NextResponse.json(
+      { error: "Failed to fully disconnect Google. Please try again." },
+      { status: 502 },
+    );
+  }
   return NextResponse.json({ ok: true });
 }

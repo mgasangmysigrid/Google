@@ -78,6 +78,16 @@ export function SignInForm() {
         After signing in, connect your Gmail from the Communications page to read
         and send email.
       </p>
+      <p className="text-center text-theme-xs text-gray-500 dark:text-gray-400">
+        <a
+          href="https://www.mysigrid.com/privacy-policy"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:text-gray-700 dark:hover:text-gray-200"
+        >
+          Privacy Policy
+        </a>
+      </p>
     </form>
   );
 }

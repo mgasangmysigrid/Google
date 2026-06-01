@@ -1,26 +1,10 @@
 import type { NextConfig } from "next";
 
-// Security headers applied to every response. These cover the items a CASA
-// Tier 2 / OWASP-style scan checks for: HSTS, MIME-sniffing, clickjacking,
-// referrer leakage, feature policy, and a content security policy.
-//
-// NOTE: the CSP allows 'unsafe-inline' (required by Next.js' inline hydration
-// scripts and by the sandboxed srcdoc iframe that renders email bodies) and
-// img-src https:/data: so inline email images render. Verify email rendering
-// in the Communications view after any CSP change.
-const ContentSecurityPolicy = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https:",
-  "font-src 'self' data:",
-  "connect-src 'self' https://*.googleapis.com https://oauth2.googleapis.com",
-  "frame-src 'self'",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-].join("; ");
-
+// Static security headers applied to every response (HSTS, MIME-sniffing,
+// clickjacking, referrer leakage, feature policy). The Content-Security-Policy
+// is intentionally NOT here — it is generated per-request with a fresh nonce in
+// middleware.ts so script-src can avoid 'unsafe-inline'/'unsafe-eval' (the weak
+// CSP a CASA Tier 2 DAST scan flags).
 const securityHeaders = [
   {
     key: "Strict-Transport-Security",
@@ -33,7 +17,6 @@ const securityHeaders = [
     key: "Permissions-Policy",
     value: "camera=(), microphone=(), geolocation=()",
   },
-  { key: "Content-Security-Policy", value: ContentSecurityPolicy },
 ];
 
 const nextConfig: NextConfig = {

@@ -16,8 +16,14 @@ export async function DELETE() {
   const userId = session?.user?.id;
   if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  // Revoke the grant + delete cached Gmail content (communications rows).
-  await revokeGoogleAccess(userId);
+  // Revoke the grant + delete cached Gmail content. A failed Google revoke
+  // must not block local data deletion, so log and continue — the local purge
+  // below still satisfies the "delete your data" requirement.
+  try {
+    await revokeGoogleAccess(userId);
+  } catch (err) {
+    console.error("account deletion: google revoke failed, continuing purge", err);
+  }
 
   const supabase = supabaseServer();
   // Defensive: ensure no Gmail-derived rows remain even if revoke partially ran.

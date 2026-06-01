@@ -1,18 +1,17 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 
-import { supabaseServer } from "@/lib/supabase/server";
+import { sessionContext } from "@/lib/supabase/from-session";
 
 export async function GET(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const sc = await sessionContext();
+  if (!sc) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { db } = sc;
 
   const { id } = await ctx.params;
-  const { data, error } = await supabaseServer()
+  const { data, error } = await db
     .from("clients")
     .select("*")
     .eq("id", id)

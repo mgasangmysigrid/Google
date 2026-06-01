@@ -6,6 +6,7 @@ import {
   GmailNotConnectedError,
   getGmailClient,
 } from "@/lib/google/client";
+import { sanitizeEmailHtml } from "@/lib/sanitize-html";
 
 export const runtime = "nodejs";
 
@@ -52,7 +53,9 @@ function extractBody(payload?: gmail_v1.Schema$MessagePart): {
   function walk(part: gmail_v1.Schema$MessagePart) {
     const mime = part.mimeType ?? "";
     if (mime === "text/html" && part.body?.data && !html) {
-      html = decodePart(part.body.data);
+      // Sanitize attacker-controlled email HTML at the source (strips script,
+      // event handlers, javascript: URLs) before it is ever sent to the client.
+      html = sanitizeEmailHtml(decodePart(part.body.data));
     } else if (mime === "text/plain" && part.body?.data && !text) {
       text = decodePart(part.body.data);
     }
@@ -141,7 +144,7 @@ export async function GET(
       messages,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Gmail error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("thread fetch error", err);
+    return NextResponse.json({ error: "Failed to load thread" }, { status: 500 });
   }
 }

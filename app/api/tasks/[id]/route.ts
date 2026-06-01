@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { z } from "zod";
 
-import { supabaseServer } from "@/lib/supabase/server";
+import { sessionContext } from "@/lib/supabase/from-session";
 
 const UpdateTask = z.object({
   title: z.string().min(1).optional(),
@@ -16,11 +15,10 @@ const UpdateTask = z.object({
   action_date: z.string().datetime().nullable().optional(),
   notification_at: z.string().datetime().nullable().optional(),
   est_effort_minutes: z.number().int().nonnegative().nullable().optional(),
-  assignee_id: z.string().nullable().optional(),
+  assignee_id: z.string().uuid().nullable().optional(),
 });
 
-// Restrict a query to tasks the user owns (assignee or creator). The service
-// role bypasses RLS, so ownership must be enforced in every query here.
+// Defense-in-depth ownership filter on top of RLS (assignee or creator).
 function ownedBy(userId: string) {
   return `assignee_id.eq.${userId},created_by.eq.${userId}`;
 }
@@ -29,12 +27,12 @@ export async function GET(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const sc = await sessionContext();
+  if (!sc) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db } = sc;
 
   const { id } = await ctx.params;
-  const { data, error } = await supabaseServer()
+  const { data, error } = await db
     .from("tasks")
     .select("*, client:clients(id, name)")
     .eq("id", id)
@@ -52,9 +50,9 @@ export async function PUT(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const sc = await sessionContext();
+  if (!sc) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db } = sc;
 
   const { id } = await ctx.params;
   const body = await req.json();
@@ -62,7 +60,7 @@ export async function PUT(
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { data, error } = await supabaseServer()
+  const { data, error } = await db
     .from("tasks")
     .update(parsed.data)
     .eq("id", id)
@@ -81,12 +79,12 @@ export async function DELETE(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const sc = await sessionContext();
+  if (!sc) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db } = sc;
 
   const { id } = await ctx.params;
-  const { error } = await supabaseServer()
+  const { error } = await db
     .from("tasks")
     .delete()
     .eq("id", id)

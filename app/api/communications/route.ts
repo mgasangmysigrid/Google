@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { auth } from "@/auth";
-import { supabaseServer } from "@/lib/supabase/server";
+import { sessionContext } from "@/lib/supabase/from-session";
 import {
   GmailNotConnectedError,
   getGmailClient,
@@ -65,9 +64,9 @@ function threadFromRow(row: {
 }
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const ctx = await sessionContext();
+  if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { userId, db: supabase } = ctx;
 
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? "25"), 50);
@@ -75,8 +74,6 @@ export async function GET(req: Request) {
     | "inbox"
     | "attached"
     | "ignored";
-
-  const supabase = supabaseServer();
 
   if (status === "attached" || status === "ignored") {
     const { data: rows, error } = await supabase
@@ -197,9 +194,11 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ items, connected: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Gmail error";
+    // Log the real error server-side; return a generic message so upstream
+    // Gmail/Supabase internals are not disclosed to the client.
+    console.error("communications list error", err);
     return NextResponse.json(
-      { error: message, connected: true, items: [] },
+      { error: "Failed to load messages", connected: true, items: [] },
       { status: 500 },
     );
   }

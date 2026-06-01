@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { z } from "zod";
 
-import { supabaseServer } from "@/lib/supabase/server";
+import { sessionContext } from "@/lib/supabase/from-session";
 
 const CreateClient = z.object({
   name: z.string().min(1),
@@ -13,15 +12,15 @@ const CreateClient = z.object({
 });
 
 export async function GET(req: Request) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const ctx = await sessionContext();
+  if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { db } = ctx;
 
   const url = new URL(req.url);
   const search = url.searchParams.get("q");
   const status = url.searchParams.get("status");
 
-  let q = supabaseServer().from("clients").select("*").order("name");
+  let q = db.from("clients").select("*").order("name");
   if (status) q = q.eq("status", status);
   if (search) q = q.ilike("name", `%${search}%`);
 
@@ -34,9 +33,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const ctx = await sessionContext();
+  if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const { db } = ctx;
 
   const body = await req.json();
   const parsed = CreateClient.safeParse(body);
@@ -44,7 +43,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { data, error } = await supabaseServer()
+  const { data, error } = await db
     .from("clients")
     .insert(parsed.data)
     .select()
