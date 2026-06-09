@@ -27,6 +27,13 @@ const securityHeaders = [
   // Resource-Policy Header Missing" finding).
   { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+  // 'credentialless' rather than 'require-corp' (CASA "Cross-Origin-Embedder-
+  // Policy Missing" finding). require-corp would BLOCK cross-origin resources
+  // without a CORP header — i.e. inbound email images shown in the sandboxed
+  // preview iframe, and any external avatars. credentialless loads those public
+  // resources without credentials instead of blocking them, so rendering is
+  // preserved while the header is present.
+  { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
   // Replace the CDN's wildcard CORS with our own origin.
   { key: "Access-Control-Allow-Origin", value: APP_ORIGIN },
 ];
