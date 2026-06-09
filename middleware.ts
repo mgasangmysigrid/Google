@@ -37,11 +37,22 @@ function buildCsp(nonce: string) {
 
 function withSecurityHeaders(res: NextResponse, nonce: string) {
   res.headers.set("Content-Security-Policy", buildCsp(nonce));
+  // Pages and API responses can carry per-user data — never let a shared/proxy
+  // cache store or replay them (CASA "Storable but Non-Cacheable" / "Retrieved
+  // from Cache" findings). Static assets are excluded by the matcher below, so
+  // their long-lived immutable caching is untouched.
+  res.headers.set("Cache-Control", "no-store, max-age=0");
   return res;
 }
 
 export default auth((req) => {
   const { nextUrl } = req;
+
+  // Reject debug HTTP methods on app routes (Cross-Site Tracing / CASA
+  // proxy-disclosure hardening).
+  if (req.method === "TRACE" || req.method === "TRACK") {
+    return new NextResponse(null, { status: 405 });
+  }
 
   const nonce = crypto.randomUUID().replace(/-/g, "");
   // Forward the nonce so Server Components / Next's runtime can stamp inline
